@@ -15,25 +15,51 @@ if (!process.env.GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const SPREADSHEET_CSV_URL = process.env.SPREADSHEET_CSV_URL;
 
+// カンマ区切りCSVを正確に分解する関数（引用符対応）
+function parseCSVLine(text) {
+  const result = [];
+  let cell = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      inQuotes = !inQuotes;
+    } else if (c === ',' && !inQuotes) {
+      result.push(cell.trim());
+      cell = '';
+    } else {
+      cell += c;
+    }
+  }
+  result.push(cell.trim());
+  return result;
+}
+
 // スプレッドシート（CSV）からFAQデータを自動読み込み
 async function fetchSpreadsheetFAQ() {
   try {
     if (!SPREADSHEET_CSV_URL) {
-      console.log('スプレッドシートURL未設定のためスキップします。');
       return '（現在、参照用スプレッドシートデータは未設定です）';
     }
     const res = await fetch(SPREADSHEET_CSV_URL);
     const csvText = await res.text();
 
-    const rows = csvText.split('\n').map(row => row.split(','));
-    let faqPrompt = '【最新FAQ・知識データベース（スプレッドシートより自動更新）】\n';
+    const lines = csvText.split(/\r?\n/);
+    let faqPrompt = '【絶対遵守：最新FAQ・個別回答ナレッジベース（スプレッドシート連動）】\n';
+    faqPrompt += '※以下のキーワードに関連する質問を受けた場合は、一般論で濁さず、指定された回答方針に従って明確かつ断定的に回答してください。\n\n';
 
     // 2行目以降を順次取得
-    for (let i = 1; i < rows.length; i++) {
-      const [category, keyword, instruction, ng] = rows[i];
+    for (let i = 1; i < lines.length; i++) {
+      if (!lines[i]) continue;
+      const row = parseCSVLine(lines[i]);
+      const category = row[0] || '';
+      const keyword = row[1] || '';
+      const instruction = row[2] || '';
+      const ng = row[3] || '';
+
       if (keyword && instruction) {
-        const catText = category ? `[${category.trim()}] ` : '';
-        faqPrompt += `- ${catText}関連キーワード「${keyword.trim()}」: ${instruction.trim()} (NG事項: ${ng ? ng.trim() : 'なし'})\n`;
+        const catText = category ? `[${category}] ` : '';
+        faqPrompt += `- ${catText}対象キーワード/質問:「${keyword}」\n  回答・指示方針: ${instruction}\n  NG表現・不可事項: ${ng || 'なし'}\n\n`;
       }
     }
     return faqPrompt;
@@ -127,4 +153,5 @@ user: ${userMessage}
 });
 
 const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
