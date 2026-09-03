@@ -15,7 +15,12 @@ if (!process.env.GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const SPREADSHEET_CSV_URL = process.env.SPREADSHEET_CSV_URL;
 
-// カンマ区切りCSV（クォーテーション囲み対応）を正確に分解するパース関数
+// スプレッドシートデータのキャッシュ用変数（高速化対策）
+let faqCache = null;
+let lastFetchTime = 0;
+const CACHE_DURATION = 5 * 60 * 1000; // 5分間キャッシュ
+
+// カンマ区切りCSV（クォーテーション囲み対応）の分解パース関数
 function parseCSVLine(text) {
   const result = [];
   let cell = '';
@@ -35,11 +40,17 @@ function parseCSVLine(text) {
   return result;
 }
 
-// スプレッドシート（CSV）からFAQデータを自動読み込み
+// スプレッドシート（CSV）からFAQデータを自動読み込み（キャッシュ機能付き）
 async function fetchSpreadsheetFAQ() {
+  const now = Date.now();
+  
+  // キャッシュが有効な場合は即座に前回のデータを返して通信時間を短縮
+  if (faqCache && (now - lastFetchTime < CACHE_DURATION)) {
+    return faqCache;
+  }
+
   try {
     if (!SPREADSHEET_CSV_URL) {
-      console.log('スプレッドシートURLが未設定のためスキップします。');
       return '（現在、参照用スプレッドシートデータは未設定です）';
     }
     const res = await fetch(SPREADSHEET_CSV_URL);
@@ -49,7 +60,6 @@ async function fetchSpreadsheetFAQ() {
     let faqPrompt = '【絶対遵守：最新FAQ・個別回答ナレッジベース（スプレッドシート連動）】\n';
     faqPrompt += '※以下のキーワードや質問に対しては、一般論で濁さず、指定された回答方針に従って明確かつ断定的に回答してください。\n\n';
 
-    // 2行目以降（A:カテゴリ, B:キーワード, C:指示, D:NG）を読み込み
     for (let i = 1; i < lines.length; i++) {
       if (!lines[i]) continue;
       const row = parseCSVLine(lines[i]);
@@ -63,10 +73,14 @@ async function fetchSpreadsheetFAQ() {
         faqPrompt += `- ${catText}対象キーワード/質問:「${keyword}」\n  回答・指示方針: ${instruction}\n  NG表現・不可事項: ${ng || 'なし'}\n\n`;
       }
     }
+
+    // キャッシュを更新
+    faqCache = faqPrompt;
+    lastFetchTime = now;
     return faqPrompt;
   } catch (error) {
     console.error('スプレッドシート読み込みエラー:', error);
-    return '（FAQデータの読み込みに一時的に失敗しました）';
+    return faqCache || '（FAQデータの読み込みに一時的に失敗しました）';
   }
 }
 
@@ -122,7 +136,7 @@ ${dynamicFAQ}
 `;
 }
 
-// リトライ付きAPI呼出（429エラー回避）
+// リトライ付きAPI呼出
 async function generateWithRetry(model, promptText, retries = 1) {
   for (let i = 0; i <= retries; i++) {
     try {
